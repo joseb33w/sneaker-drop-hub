@@ -68,7 +68,8 @@ const state = {
   error: '',
   user: null,
   now: Date.now(),
-  authBusy: false
+  authBusy: false,
+  authChecked: false
 }
 
 function escapeHtml(value) {
@@ -320,7 +321,6 @@ async function loadFavorites() {
 
 async function loadReleases() {
   state.loading = true
-  state.error = ''
   render()
 
   try {
@@ -332,12 +332,11 @@ async function loadReleases() {
     if (error) throw error
 
     state.releases = Array.isArray(data) && data.length ? data : fallbackReleases
-    if (!Array.isArray(data) || data.length === 0) {
-      state.error = 'No live releases were found, so sample drops are shown instead.'
-    }
+    state.error = ''
   } catch (error) {
     state.releases = fallbackReleases
-    state.error = error && error.message ? error.message : 'Live release data is unavailable right now.'
+    state.error = ''
+    console.error('Release load error:', error && error.message ? error.message : error)
   } finally {
     state.loading = false
     render()
@@ -355,7 +354,9 @@ async function toggleFavorite(releaseId) {
       return
     }
 
-    if (state.favorites.has(releaseId)) {
+    const isFavorite = state.favorites.has(releaseId)
+
+    if (isFavorite) {
       const { error } = await supabase
         .from(FAVORITES_TABLE)
         .delete()
@@ -385,7 +386,9 @@ async function logout() {
     if (error) throw error
     state.user = null
     state.favorites = new Set()
-    state.tab = 'all'
+    if (state.tab === 'favorites') {
+      state.tab = 'all'
+    }
     render()
   } catch (error) {
     console.error('Logout error:', error && error.message ? error.message : error)
@@ -394,16 +397,19 @@ async function logout() {
   }
 }
 
-async function initializeAuth() {
+async function initAuth() {
   try {
     const { data, error } = await supabase.auth.getUser()
-    if (error) {
-      console.error('Auth lookup error:', error.message)
-      state.user = null
-      return
-    }
 
-    state.user = data && data.user ? data.user : null
+    if (error) {
+      const message = error && error.message ? error.message : ''
+      if (message && !message.toLowerCase().includes('auth session missing')) {
+        console.error('Auth lookup error:', message)
+      }
+      state.user = null
+    } else {
+      state.user = data && data.user ? data.user : null
+    }
 
     if (state.user) {
       await ensureAppUser(state.user)
@@ -415,14 +421,20 @@ async function initializeAuth() {
       }
     }
   } catch (error) {
-    console.error('Init auth error:', error && error.message ? error.message : error)
+    const message = error && error.message ? error.message : String(error)
+    if (!String(message).toLowerCase().includes('auth session missing')) {
+      console.error('Auth lookup error:', message)
+    }
     state.user = null
     state.favorites = new Set()
+  } finally {
+    state.authChecked = true
+    render()
   }
 }
 
 function startClock() {
-  setInterval(() => {
+  window.setInterval(() => {
     state.now = Date.now()
     render()
   }, 60000)
@@ -431,29 +443,32 @@ function startClock() {
 async function init() {
   try {
     render()
-    await initializeAuth()
+    await initAuth()
     await loadReleases()
-    startClock()
 
     supabase.auth.onAuthStateChange(async (_event, session) => {
-      state.user = session && session.user ? session.user : null
-
-      if (state.user) {
-        await ensureAppUser(state.user)
-        await loadFavorites()
-      } else {
-        state.favorites = new Set()
-        if (state.tab === 'favorites') {
-          state.tab = 'all'
+      try {
+        state.user = session && session.user ? session.user : null
+        if (state.user) {
+          await ensureAppUser(state.user)
+          await loadFavorites()
+        } else {
+          state.favorites = new Set()
+          if (state.tab === 'favorites') {
+            state.tab = 'all'
+          }
         }
+        render()
+      } catch (error) {
+        console.error('Auth state change error:', error && error.message ? error.message : error)
       }
-
-      render()
     })
+
+    startClock()
   } catch (error) {
     console.error('Init error:', error && error.message ? error.message : error)
     state.loading = false
-    state.error = 'The app could not finish loading.'
+    state.error = 'Unable to initialize the app right now.'
     render()
   }
 }
