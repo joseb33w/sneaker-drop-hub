@@ -43,6 +43,11 @@ img { max-width: 100%; display: block; }
   align-items: flex-start;
   flex-wrap: wrap;
 }
+.session-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
 .eyebrow {
   margin: 0 0 8px;
   color: var(--accent);
@@ -111,7 +116,7 @@ h1 {
   padding: 6px;
   gap: 6px;
 }
-.tab-btn, .sort-chip, .ghost-btn, .primary-btn, .heart-btn {
+.tab-btn, .sort-chip, .ghost-btn, .primary-btn, .heart-btn, .ghost-link {
   border: 0;
   cursor: pointer;
   transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
@@ -131,6 +136,22 @@ h1 {
   padding: 0 16px;
   color: var(--muted);
   min-height: 56px;
+}
+.ghost-btn, .ghost-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 16px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 600;
+}
+.ghost-btn:hover, .ghost-link:hover, .heart-btn:hover, .tab-btn:hover {
+  transform: translateY(-1px);
 }
 .section-head {
   display: flex;
@@ -195,6 +216,7 @@ h1 {
   color: #fff;
   display: grid;
   place-items: center;
+  font-size: 1.1rem;
 }
 .heart-btn.active {
   background: rgba(251,113,133,0.16);
@@ -271,4 +293,6 @@ h1 {
   .grid { grid-template-columns: 1fr; }
   .meta-list { grid-template-columns: 1fr; }
   .hero-top, .section-head { align-items: stretch; }
+  .session-actions { width: 100%; }
+  .ghost-btn, .ghost-link { width: 100%; }
 }
