@@ -303,13 +303,15 @@ async function loadFavorites() {
       state.favorites = new Set()
       return
     }
+
     const { data, error } = await supabase
       .from(FAVORITES_TABLE)
       .select('release_id')
       .order('created_at', { ascending: false })
 
     if (error) throw error
-    state.favorites = new Set((data || []).map((item) => item.release_id))
+
+    state.favorites = new Set((data || []).map((item) => item.release_id).filter(Boolean))
   } catch (error) {
     console.error('Favorites load error:', error && error.message ? error.message : error)
     state.favorites = new Set()
@@ -317,11 +319,11 @@ async function loadFavorites() {
 }
 
 async function loadReleases() {
-  try {
-    state.loading = true
-    state.error = ''
-    render()
+  state.loading = true
+  state.error = ''
+  render()
 
+  try {
     const { data, error } = await supabase
       .from(RELEASES_TABLE)
       .select('*')
@@ -331,9 +333,9 @@ async function loadReleases() {
 
     state.releases = Array.isArray(data) && data.length ? data : fallbackReleases
   } catch (error) {
-    console.error('Release load error:', error && error.message ? error.message : error)
-    state.error = error && error.message ? error.message : 'Unable to load releases.'
     state.releases = fallbackReleases
+    state.error = ''
+    console.error('Release load error:', error && error.message ? error.message : error)
   } finally {
     state.loading = false
     render()
@@ -376,13 +378,14 @@ async function toggleFavorite(releaseId) {
 
 async function logout() {
   try {
-    if (state.authBusy) return
     state.authBusy = true
     const { error } = await supabase.auth.signOut()
     if (error) throw error
     state.user = null
     state.favorites = new Set()
-    state.tab = 'all'
+    if (state.tab === 'favorites') {
+      state.tab = 'all'
+    }
     render()
   } catch (error) {
     console.error('Logout error:', error && error.message ? error.message : error)
@@ -391,13 +394,16 @@ async function logout() {
   }
 }
 
-async function init() {
+async function refreshAuthState() {
   try {
-    render()
-
     const { data, error } = await supabase.auth.getUser()
     if (error) {
-      console.error('Auth check error:', error.message)
+      const message = String(error.message || '')
+      if (!message.toLowerCase().includes('auth session missing')) {
+        console.error('Auth check error:', message)
+      }
+      state.user = null
+      return
     }
 
     state.user = data && data.user ? data.user : null
@@ -407,24 +413,39 @@ async function init() {
       await loadFavorites()
     } else {
       state.favorites = new Set()
+      if (state.tab === 'favorites') {
+        state.tab = 'all'
+      }
     }
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error)
+    if (!String(message).toLowerCase().includes('auth session missing')) {
+      console.error('Auth check error:', message)
+    }
+    state.user = null
+    state.favorites = new Set()
+  }
+}
 
+async function init() {
+  try {
+    render()
+    await refreshAuthState()
     await loadReleases()
+    render()
 
     supabase.auth.onAuthStateChange(async (_event, session) => {
-      try {
-        state.user = session && session.user ? session.user : null
-        if (state.user) {
-          await ensureAppUser(state.user)
-          await loadFavorites()
-        } else {
-          state.favorites = new Set()
+      state.user = session && session.user ? session.user : null
+      if (state.user) {
+        await ensureAppUser(state.user)
+        await loadFavorites()
+      } else {
+        state.favorites = new Set()
+        if (state.tab === 'favorites') {
           state.tab = 'all'
         }
-        render()
-      } catch (authError) {
-        console.error('Auth state error:', authError && authError.message ? authError.message : authError)
       }
+      render()
     })
 
     window.setInterval(() => {
@@ -433,11 +454,8 @@ async function init() {
     }, 60000)
   } catch (error) {
     console.error('Init error:', error && error.message ? error.message : error)
-    state.error = error && error.message ? error.message : 'Unable to initialize app.'
     state.loading = false
-    if (!state.releases.length) {
-      state.releases = fallbackReleases
-    }
+    state.releases = fallbackReleases
     render()
   }
 }
