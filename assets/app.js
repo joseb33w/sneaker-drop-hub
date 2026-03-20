@@ -130,7 +130,7 @@ function sessionMarkup() {
     return `
       <div class="session-actions">
         <div class="badge">${email}</div>
-        <button id="logoutBtn" class="ghost-btn" type="button">Log out</button>
+        <button id="logoutBtn" class="ghost-btn logout-btn" type="button">Log out</button>
       </div>
     `
   }
@@ -311,7 +311,7 @@ async function loadFavorites() {
 
     if (error) throw error
 
-    state.favorites = new Set((data || []).map((item) => item.release_id).filter(Boolean))
+    state.favorites = new Set((data || []).map((item) => item.release_id))
   } catch (error) {
     console.error('Favorites load error:', error && error.message ? error.message : error)
     state.favorites = new Set()
@@ -332,10 +332,12 @@ async function loadReleases() {
     if (error) throw error
 
     state.releases = Array.isArray(data) && data.length ? data : fallbackReleases
+    if (!Array.isArray(data) || data.length === 0) {
+      state.error = 'No live releases were found, so sample drops are shown instead.'
+    }
   } catch (error) {
     state.releases = fallbackReleases
-    state.error = ''
-    console.error('Release load error:', error && error.message ? error.message : error)
+    state.error = error && error.message ? error.message : 'Live release data is unavailable right now.'
   } finally {
     state.loading = false
     render()
@@ -383,9 +385,7 @@ async function logout() {
     if (error) throw error
     state.user = null
     state.favorites = new Set()
-    if (state.tab === 'favorites') {
-      state.tab = 'all'
-    }
+    state.tab = 'all'
     render()
   } catch (error) {
     console.error('Logout error:', error && error.message ? error.message : error)
@@ -394,14 +394,11 @@ async function logout() {
   }
 }
 
-async function refreshAuthState() {
+async function initializeAuth() {
   try {
     const { data, error } = await supabase.auth.getUser()
     if (error) {
-      const message = String(error.message || '')
-      if (!message.toLowerCase().includes('auth session missing')) {
-        console.error('Auth check error:', message)
-      }
+      console.error('Auth lookup error:', error.message)
       state.user = null
       return
     }
@@ -418,24 +415,29 @@ async function refreshAuthState() {
       }
     }
   } catch (error) {
-    const message = error && error.message ? error.message : String(error)
-    if (!String(message).toLowerCase().includes('auth session missing')) {
-      console.error('Auth check error:', message)
-    }
+    console.error('Init auth error:', error && error.message ? error.message : error)
     state.user = null
     state.favorites = new Set()
   }
 }
 
+function startClock() {
+  setInterval(() => {
+    state.now = Date.now()
+    render()
+  }, 60000)
+}
+
 async function init() {
   try {
     render()
-    await refreshAuthState()
+    await initializeAuth()
     await loadReleases()
-    render()
+    startClock()
 
     supabase.auth.onAuthStateChange(async (_event, session) => {
       state.user = session && session.user ? session.user : null
+
       if (state.user) {
         await ensureAppUser(state.user)
         await loadFavorites()
@@ -445,17 +447,13 @@ async function init() {
           state.tab = 'all'
         }
       }
+
       render()
     })
-
-    window.setInterval(() => {
-      state.now = Date.now()
-      render()
-    }, 60000)
   } catch (error) {
     console.error('Init error:', error && error.message ? error.message : error)
     state.loading = false
-    state.releases = fallbackReleases
+    state.error = 'The app could not finish loading.'
     render()
   }
 }
