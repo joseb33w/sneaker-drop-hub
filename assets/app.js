@@ -126,19 +126,17 @@ function filteredReleases() {
 }
 
 function sessionMarkup() {
-  if (state.user) {
-    const email = escapeHtml(state.user.email || 'Signed in')
-    return `
-      <div class="session-actions">
-        <div class="badge">${email}</div>
-        <button id="logoutBtn" class="ghost-btn logout-btn" type="button">Log out</button>
-      </div>
-    `
+  if (!state.user) {
+    return ''
   }
+
+  const email = escapeHtml(state.user.email || 'Signed in')
+  const busyLabel = state.authBusy ? 'Signing out...' : 'Log out'
 
   return `
     <div class="session-actions">
-      <a class="ghost-link" href="./auth.html">Log in</a>
+      <div class="badge">${email}</div>
+      <button id="logoutBtn" class="ghost-btn logout-btn" type="button" ${state.authBusy ? 'disabled' : ''}>${busyLabel}</button>
     </div>
   `
 }
@@ -320,9 +318,6 @@ async function loadFavorites() {
 }
 
 async function loadReleases() {
-  state.loading = true
-  render()
-
   try {
     const { data, error } = await supabase
       .from(RELEASES_TABLE)
@@ -332,25 +327,19 @@ async function loadReleases() {
     if (error) throw error
 
     state.releases = Array.isArray(data) && data.length ? data : fallbackReleases
-    state.error = ''
+    if (!Array.isArray(data) || data.length === 0) {
+      state.error = 'Live release data is empty, so fallback releases are being shown.'
+    }
   } catch (error) {
     state.releases = fallbackReleases
-    state.error = ''
+    state.error = 'Live release data could not be loaded, so fallback releases are being shown.'
     console.error('Release load error:', error && error.message ? error.message : error)
-  } finally {
-    state.loading = false
-    render()
   }
 }
 
 async function toggleFavorite(releaseId) {
   try {
     if (!state.user) {
-      window.location.href = './auth.html'
-      return
-    }
-
-    if (String(releaseId).startsWith('fallback-')) {
       return
     }
 
@@ -380,20 +369,25 @@ async function toggleFavorite(releaseId) {
 }
 
 async function logout() {
+  if (state.authBusy) return
+
+  state.authBusy = true
+  render()
+
   try {
-    state.authBusy = true
     const { error } = await supabase.auth.signOut()
     if (error) throw error
+
     state.user = null
     state.favorites = new Set()
-    if (state.tab === 'favorites') {
-      state.tab = 'all'
-    }
+    state.authChecked = true
+    state.authBusy = false
+    state.tab = 'all'
     render()
   } catch (error) {
-    console.error('Logout error:', error && error.message ? error.message : error)
-  } finally {
     state.authBusy = false
+    render()
+    console.error('Logout error:', error && error.message ? error.message : error)
   }
 }
 
@@ -401,75 +395,63 @@ async function initAuth() {
   try {
     const { data, error } = await supabase.auth.getUser()
 
-    if (error) {
-      const message = error && error.message ? error.message : ''
-      if (message && !message.toLowerCase().includes('auth session missing')) {
-        console.error('Auth lookup error:', message)
-      }
-      state.user = null
-    } else {
-      state.user = data && data.user ? data.user : null
+    if (error && !String(error.message || '').toLowerCase().includes('auth session missing')) {
+      throw error
     }
+
+    state.user = data && data.user ? data.user : null
+    state.authChecked = true
 
     if (state.user) {
       await ensureAppUser(state.user)
       await loadFavorites()
     } else {
       state.favorites = new Set()
-      if (state.tab === 'favorites') {
-        state.tab = 'all'
-      }
+      state.tab = 'all'
     }
   } catch (error) {
-    const message = error && error.message ? error.message : String(error)
-    if (!String(message).toLowerCase().includes('auth session missing')) {
-      console.error('Auth lookup error:', message)
-    }
     state.user = null
     state.favorites = new Set()
-  } finally {
     state.authChecked = true
-    render()
+    console.error('Auth init error:', error && error.message ? error.message : error)
   }
-}
-
-function startClock() {
-  window.setInterval(() => {
-    state.now = Date.now()
-    render()
-  }, 60000)
 }
 
 async function init() {
   try {
+    state.loading = true
     render()
+
     await initAuth()
     await loadReleases()
 
-    supabase.auth.onAuthStateChange(async (_event, session) => {
-      try {
-        state.user = session && session.user ? session.user : null
-        if (state.user) {
-          await ensureAppUser(state.user)
-          await loadFavorites()
-        } else {
-          state.favorites = new Set()
-          if (state.tab === 'favorites') {
-            state.tab = 'all'
-          }
-        }
-        render()
-      } catch (error) {
-        console.error('Auth state change error:', error && error.message ? error.message : error)
-      }
-    })
-
-    startClock()
-  } catch (error) {
-    console.error('Init error:', error && error.message ? error.message : error)
     state.loading = false
-    state.error = 'Unable to initialize the app right now.'
     render()
+
+    setInterval(() => {
+      state.now = Date.now()
+      render()
+    }, 60000)
+
+    supabase.auth.onAuthStateChange(async (_event, session) => {
+      state.user = session && session.user ? session.user : null
+
+      if (state.user) {
+        await ensureAppUser(state.user)
+        await loadFavorites()
+      } else {
+        state.favorites = new Set()
+        state.tab = 'all'
+      }
+
+      state.authBusy = false
+      render()
+    })
+  } catch (error) {
+    state.loading = false
+    state.error = 'The app could not finish loading.'
+    render()
+    console.error('Init error:', error && error.message ? error.message : error)
   }
 }
 
