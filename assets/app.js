@@ -126,9 +126,7 @@ function filteredReleases() {
 }
 
 function sessionMarkup() {
-  if (!state.user) {
-    return ''
-  }
+  if (!state.user) return ''
 
   const email = escapeHtml(state.user.email || 'Signed in')
   const busyLabel = state.authBusy ? 'Signing out...' : 'Log out'
@@ -318,6 +316,10 @@ async function loadFavorites() {
 }
 
 async function loadReleases() {
+  state.loading = true
+  state.error = ''
+  render()
+
   try {
     const { data, error } = await supabase
       .from(RELEASES_TABLE)
@@ -327,25 +329,25 @@ async function loadReleases() {
     if (error) throw error
 
     state.releases = Array.isArray(data) && data.length ? data : fallbackReleases
-    if (!Array.isArray(data) || data.length === 0) {
-      state.error = 'Live release data is empty, so fallback releases are being shown.'
-    }
   } catch (error) {
+    state.error = error && error.message ? error.message : 'Unable to load releases.'
     state.releases = fallbackReleases
-    state.error = 'Live release data could not be loaded, so fallback releases are being shown.'
-    console.error('Release load error:', error && error.message ? error.message : error)
+  } finally {
+    state.loading = false
+    render()
   }
 }
 
 async function toggleFavorite(releaseId) {
   try {
     if (!state.user) {
+      window.location.href = './auth.html'
       return
     }
 
-    const isFavorite = state.favorites.has(releaseId)
+    const isActive = state.favorites.has(releaseId)
 
-    if (isFavorite) {
+    if (isActive) {
       const { error } = await supabase
         .from(FAVORITES_TABLE)
         .delete()
@@ -377,81 +379,74 @@ async function logout() {
   try {
     const { error } = await supabase.auth.signOut()
     if (error) throw error
-
     state.user = null
     state.favorites = new Set()
-    state.authChecked = true
-    state.authBusy = false
-    state.tab = 'all'
-    render()
-  } catch (error) {
-    state.authBusy = false
-    render()
-    console.error('Logout error:', error && error.message ? error.message : error)
-  }
-}
-
-async function initAuth() {
-  try {
-    const { data, error } = await supabase.auth.getUser()
-
-    if (error && !String(error.message || '').toLowerCase().includes('auth session missing')) {
-      throw error
-    }
-
-    state.user = data && data.user ? data.user : null
-    state.authChecked = true
-
-    if (state.user) {
-      await ensureAppUser(state.user)
-      await loadFavorites()
-    } else {
-      state.favorites = new Set()
+    if (state.tab === 'favorites') {
       state.tab = 'all'
     }
   } catch (error) {
-    state.user = null
-    state.favorites = new Set()
-    state.authChecked = true
-    console.error('Auth init error:', error && error.message ? error.message : error)
+    console.error('Logout error:', error && error.message ? error.message : error)
+  } finally {
+    state.authBusy = false
+    render()
   }
+}
+
+async function syncAuth() {
+  try {
+    const { data, error } = await supabase.auth.getUser()
+    if (error) {
+      const message = error && error.message ? error.message : ''
+      if (!message.toLowerCase().includes('auth session missing')) {
+        console.error('Auth lookup error:', message || error)
+      }
+      state.user = null
+    } else {
+      state.user = data?.user || null
+      if (state.user) {
+        await ensureAppUser(state.user)
+      }
+    }
+  } catch (error) {
+    console.error('Auth sync error:', error && error.message ? error.message : error)
+    state.user = null
+  } finally {
+    state.authChecked = true
+    await loadFavorites()
+    render()
+  }
+}
+
+function startClock() {
+  setInterval(() => {
+    state.now = Date.now()
+    render()
+  }, 60000)
 }
 
 async function init() {
   try {
-    state.loading = true
     render()
-
-    await initAuth()
+    await syncAuth()
     await loadReleases()
-
-    state.loading = false
-    render()
-
-    setInterval(() => {
-      state.now = Date.now()
-      render()
-    }, 60000)
+    startClock()
 
     supabase.auth.onAuthStateChange(async (_event, session) => {
-      state.user = session && session.user ? session.user : null
-
+      state.user = session?.user || null
       if (state.user) {
         await ensureAppUser(state.user)
-        await loadFavorites()
-      } else {
-        state.favorites = new Set()
+      }
+      await loadFavorites()
+      if (!state.user && state.tab === 'favorites') {
         state.tab = 'all'
       }
-
-      state.authBusy = false
       render()
     })
   } catch (error) {
-    state.loading = false
-    state.error = 'The app could not finish loading.'
-    render()
     console.error('Init error:', error && error.message ? error.message : error)
+    state.error = 'App failed to initialize.'
+    state.loading = false
+    render()
   }
 }
 
