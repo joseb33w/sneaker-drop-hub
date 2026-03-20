@@ -67,7 +67,8 @@ const state = {
   loading: true,
   error: '',
   user: null,
-  now: Date.now()
+  now: Date.now(),
+  authBusy: false
 }
 
 function escapeHtml(value) {
@@ -75,7 +76,7 @@ function escapeHtml(value) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/\"/g, '&quot;')
+    .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;')
 }
 
@@ -123,6 +124,24 @@ function filteredReleases() {
     .sort((a, b) => new Date(a.release_date) - new Date(b.release_date))
 }
 
+function sessionMarkup() {
+  if (state.user) {
+    const email = escapeHtml(state.user.email || 'Signed in')
+    return `
+      <div class="session-actions">
+        <div class="badge">${email}</div>
+        <button id="logoutBtn" class="ghost-btn" type="button">Log out</button>
+      </div>
+    `
+  }
+
+  return `
+    <div class="session-actions">
+      <a class="ghost-link" href="./auth.html">Log in</a>
+    </div>
+  `
+}
+
 function render() {
   const app = document.getElementById('app')
   const releases = filteredReleases()
@@ -138,8 +157,7 @@ function render() {
             <h1>Never miss the next drop.</h1>
             <p class="hero-copy">
               Browse upcoming sneaker releases, track countdowns in real time, search by brand or model,
-              and save favorites. This repo now uses stable asset filenames so preview and GitHub hosting
-              will not break from missing hashed bundles.
+              and save favorites.
             </p>
             <div class="badge-row">
               <div class="badge">${total} upcoming releases</div>
@@ -147,6 +165,7 @@ function render() {
               <div class="badge">Live from Supabase</div>
             </div>
           </div>
+          ${sessionMarkup()}
         </div>
 
         <div class="controls">
@@ -215,8 +234,6 @@ function render() {
           </article>
         `).join('')}
       </section>
-
-      <p class="footer-note">The old broken repo page was caused by a missing hashed JavaScript asset. This version removes that failure point.</p>
     </main>
   `
 
@@ -246,6 +263,13 @@ function bindEvents() {
         await toggleFavorite(id)
       })
     })
+
+    const logoutBtn = document.getElementById('logoutBtn')
+    if (logoutBtn) {
+      logoutBtn.addEventListener('click', async () => {
+        await logout()
+      })
+    }
   } catch (error) {
     console.error('Bind error:', error && error.message ? error.message : error)
   }
@@ -304,13 +328,11 @@ async function loadReleases() {
       .order('release_date', { ascending: true })
 
     if (error) throw error
-    state.releases = (data && data.length ? data : fallbackReleases).map((item) => ({
-      ...item,
-      image_url: item.image_url || 'https://placehold.co/800x600/0f172a/e2e8f0?text=Sneaker+Drop'
-    }))
+
+    state.releases = Array.isArray(data) && data.length ? data : fallbackReleases
   } catch (error) {
     console.error('Release load error:', error && error.message ? error.message : error)
-    state.error = 'Live releases are temporarily unavailable, so sample upcoming drops are shown instead.'
+    state.error = error && error.message ? error.message : 'Unable to load releases.'
     state.releases = fallbackReleases
   } finally {
     state.loading = false
@@ -321,14 +343,11 @@ async function loadReleases() {
 async function toggleFavorite(releaseId) {
   try {
     if (!state.user) {
-      state.error = 'Sign in is required to save favorites. Releases are still visible without signing in.'
-      render()
+      window.location.href = './auth.html'
       return
     }
 
     if (String(releaseId).startsWith('fallback-')) {
-      state.error = 'Favorites are only available for live Supabase releases.'
-      render()
       return
     }
 
@@ -337,44 +356,88 @@ async function toggleFavorite(releaseId) {
         .from(FAVORITES_TABLE)
         .delete()
         .eq('release_id', releaseId)
+
       if (error) throw error
       state.favorites.delete(releaseId)
     } else {
-      const { error } = await supabase.from(FAVORITES_TABLE).insert({
-        release_id: releaseId
-      })
+      const { error } = await supabase
+        .from(FAVORITES_TABLE)
+        .insert({ release_id: releaseId })
+
       if (error) throw error
       state.favorites.add(releaseId)
     }
-    state.error = ''
+
     render()
   } catch (error) {
     console.error('Favorite toggle error:', error && error.message ? error.message : error)
-    state.error = error && error.message ? error.message : 'Could not update favorites.'
+  }
+}
+
+async function logout() {
+  try {
+    if (state.authBusy) return
+    state.authBusy = true
+    const { error } = await supabase.auth.signOut()
+    if (error) throw error
+    state.user = null
+    state.favorites = new Set()
+    state.tab = 'all'
     render()
+  } catch (error) {
+    console.error('Logout error:', error && error.message ? error.message : error)
+  } finally {
+    state.authBusy = false
   }
 }
 
 async function init() {
   try {
     render()
+
     const { data, error } = await supabase.auth.getUser()
-    if (error) throw error
-    state.user = data?.user || null
+    if (error) {
+      console.error('Auth check error:', error.message)
+    }
+
+    state.user = data && data.user ? data.user : null
+
     if (state.user) {
       await ensureAppUser(state.user)
       await loadFavorites()
+    } else {
+      state.favorites = new Set()
     }
+
     await loadReleases()
-    setInterval(() => {
+
+    supabase.auth.onAuthStateChange(async (_event, session) => {
+      try {
+        state.user = session && session.user ? session.user : null
+        if (state.user) {
+          await ensureAppUser(state.user)
+          await loadFavorites()
+        } else {
+          state.favorites = new Set()
+          state.tab = 'all'
+        }
+        render()
+      } catch (authError) {
+        console.error('Auth state error:', authError && authError.message ? authError.message : authError)
+      }
+    })
+
+    window.setInterval(() => {
       state.now = Date.now()
       render()
     }, 60000)
   } catch (error) {
     console.error('Init error:', error && error.message ? error.message : error)
+    state.error = error && error.message ? error.message : 'Unable to initialize app.'
     state.loading = false
-    state.error = error && error.message ? error.message : 'Failed to initialize app.'
-    state.releases = fallbackReleases
+    if (!state.releases.length) {
+      state.releases = fallbackReleases
+    }
     render()
   }
 }
